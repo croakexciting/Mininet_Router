@@ -184,10 +184,11 @@ uint8_t* sr_generate_icmp(sr_ethernet_hdr_t *received_ether_hdr,
                           uint8_t type, uint8_t code)
 {
 	uint8_t *reply_packet = 0;
-	sr_icmp_hdr_t *icmp_hdr = 0;
+	sr_icmp_echo_hdr_t *icmp_hdr, *recv_icmp_hdr = 0;
 	sr_ip_hdr_t *ip_hdr = 0;
 	sr_ethernet_hdr_t *ether_hdr = 0;
 	size_t icmp_size = 0;
+	int ret = 0;
 	
 	/* type 0 echo reply */
 	if (type == 0) {
@@ -195,20 +196,23 @@ uint8_t* sr_generate_icmp(sr_ethernet_hdr_t *received_ether_hdr,
 		fprintf(stderr,"TEST: generating echo reply\n");
 		
 		/* create new reply packet */
-		if ((reply_packet = malloc(sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_hdr_t))) == NULL) {
+		if ((reply_packet = malloc(sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_echo_hdr_t))) == NULL) {
 				fprintf(stderr,"Error: out of memory (sr_generate_icmp)\n");
 				return 0;
 		}
 		
 		/* construct ICMP header */
-		icmp_hdr = (sr_icmp_hdr_t *)(reply_packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
+		icmp_hdr = (sr_icmp_echo_hdr_t *)(reply_packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_icmp_echo_hdr_t));
+		recv_icmp_hdr = (sr_icmp_echo_hdr_t *)(received_ip_hdr + sizeof(sr_ip_hdr_t));
+		memcpy(icmp_hdr, recv_icmp_hdr, sizeof(sr_icmp_echo_hdr_t));
+		fprintf(stderr,"TEST: bytes copied: %d\n", sizeof(sr_icmp_echo_hdr_t));
 		icmp_hdr->icmp_type = type;
 		icmp_hdr->icmp_code = code;
 		icmp_hdr->icmp_sum = 0;
-		icmp_hdr->icmp_sum = cksum(icmp_hdr, sizeof(sr_icmp_hdr_t));
+		icmp_hdr->icmp_sum = cksum(icmp_hdr, sizeof(sr_icmp_echo_hdr_t));
 		
 		/* grab the size of ICMP header */
-		icmp_size = sizeof(sr_icmp_hdr_t);
+		icmp_size = sizeof(sr_icmp_echo_hdr_t);
 	}
 	/* Destination net unreachable (type 3, code 0) OR Time exceeded (type 11, code 0),
 	 since the two types use the exact same struct, except the next_mtu field which is unused for type 11 */
@@ -235,7 +239,7 @@ uint8_t* sr_generate_icmp(sr_ethernet_hdr_t *received_ether_hdr,
 		}
 		memcpy(icmp_hdr->data, received_ip_hdr, ICMP_DATA_SIZE);
 		icmp_hdr->icmp_sum = 0;
-		icmp_hdr->icmp_sum = cksum(icmp_hdr, (9 * 4));
+		icmp_hdr->icmp_sum = cksum(icmp_hdr, sizeof(sr_icmp_t3_hdr_t));
 		
 		/* grab the size of ICMP header */
 		icmp_size = sizeof(sr_icmp_t3_hdr_t);
@@ -252,15 +256,15 @@ uint8_t* sr_generate_icmp(sr_ethernet_hdr_t *received_ether_hdr,
 	ip_hdr->ip_v = 4;                                                                        /* version */
 	ip_hdr->ip_tos = 0;                                                                       /* type of service */
 	fprintf(stderr,"TEST: ip head length: %d, icmp head length: %d\n",sizeof(sr_ip_hdr_t),icmp_size);
-	ip_hdr->ip_len = sizeof(sr_ip_hdr_t) + icmp_size;                                                /* total length */
+	ip_hdr->ip_len = htons(20 + icmp_size);                                                /* total length */
 	ip_hdr->ip_id = 0;                                                                        /* identification */
 	ip_hdr->ip_off = htons(IP_DF);                                                                /* fragment offset field */
-	ip_hdr->ip_ttl = htons(INIT_TTL);                                                        /* time to live */
-	ip_hdr->ip_p = htons(ip_protocol_icmp);                                                /* protocol */
+	ip_hdr->ip_ttl = INIT_TTL;                                                        /* time to live */
+	ip_hdr->ip_p = ip_protocol_icmp;                                                /* protocol */
 	ip_hdr->ip_src = iface->ip;                                                        /* source ip address */
 	ip_hdr->ip_dst = received_ip_hdr->ip_src;                                        /* dest ip address */
 	ip_hdr->ip_sum = 0;
-	ip_hdr->ip_sum = cksum(ip_hdr, (5 * 4));                /* checksum */
+	ip_hdr->ip_sum = cksum(ip_hdr, 20);                /* checksum */
 	
 	/* construct ethernet header */
 	ether_hdr = (sr_ethernet_hdr_t*)reply_packet;
@@ -313,7 +317,6 @@ void sr_handleip(struct sr_instance* sr,
 	fprintf(stderr, "TEST:IP packet from IP: %u\n", ip_hdr->ip_src);
 	fprintf(stderr, "TEST:IP packet to IP: %u\n", ip_hdr->ip_dst);
 	fprintf(stderr, "TEST:IP packet received from interface: %s\n", interface);
-	fprintf(stderr, "TEST:Our IP: %u, in network bytes: %u\n", iface->ip, htonl(iface->ip));
 	
 	/* Loop through all interfaces to check if packet is destined to one of our IPs */
 	dst_iface = sr->if_list;
@@ -322,16 +325,19 @@ void sr_handleip(struct sr_instance* sr,
 	
 		/* found destination interface */
 		if (ip_hdr->ip_dst == dst_iface->ip) {
+			fprintf(stderr, "TEST:one interface with ip: %d\n", dst_iface->ip);
 			break;
 		}
 		dst_iface = dst_iface->next;
-	}	
-	
+	}
+		
 	/* if the packet is destined to our ip */
 	if (ip_hdr->ip_dst == dst_iface->ip) {
+		
+		fprintf(stderr, "TEST: IP Packet for us\n");
 	
-			/* if it is an ICMP */
-		if (ip_hdr->ip_p == htons(ip_protocol_icmp)) {
+		/* if it is an ICMP */
+		if (ip_hdr->ip_p == ip_protocol_icmp) {
 		
 			fprintf(stderr, "TEST: It is a ICMP\n");
 				
@@ -343,31 +349,27 @@ void sr_handleip(struct sr_instance* sr,
 			
 			icmp_hdr = (sr_icmp_hdr_t*)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
 			
-			/* perform ICMP header checksum */
-			if (cksum(icmp_hdr, (4 * 4)) != 0xffff) {
-				fprintf(stderr, "Error: ICMP checksum failed\n");
-				return;
-			}
-			
 			/* if it is an ICMP echo request, send an ICMP echo reply */
-			if (icmp_hdr->icmp_type == htons(8) && icmp_hdr->icmp_code == htons(0)) {
-					
+			if (icmp_hdr->icmp_type == 8 && icmp_hdr->icmp_code == 0) {
+				
+				fprintf(stderr, "TEST: It is a echo request(ping)\n");
+				
 				/* perform ICMP header checksum */
-				if (cksum(icmp_hdr, sizeof(icmp_hdr)) != 0xffff) {
+				if (cksum(icmp_hdr, (len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t))) != 0xffff) {
 					fprintf(stderr, "Error: ICMP checksum failed\n");
 					return;
 				}
 				
 				/* generate an echo reply packet */
-				if ((reply_packet = sr_generate_icmp((sr_ethernet_hdr_t *)packet, ip_hdr, recv_iface, 0, 0)) == 0) {
+				if ((reply_packet = sr_generate_icmp((sr_ethernet_hdr_t *)packet, ip_hdr, dst_iface, 0, 0)) == 0) {
 					fprintf(stderr, "Error: failed to generate ICMP echo reply packet\n");
 					return;
 				}
 				
-				reply_packet_size = sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_hdr_t);
+				reply_packet_size = sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t);
 				
 				/* send an ICMP echo reply */
-				if (sr_send_packet(sr, reply_packet, reply_packet_size, (const char*)interface) == -1) {
+				if (sr_send_packet(sr, reply_packet, reply_packet_size + ntohs(ip_hdr->ip_len) - ip_hdr->ip_hl*4, (const char*)(dst_iface->name)) == -1) {
 					fprintf(stderr, "Error: sending packet failed (sr_handleip)\n");
 				}
 				
@@ -400,7 +402,7 @@ void sr_handleip(struct sr_instance* sr,
 			if (ip_hdr->ip_ttl <= htons(1)) {
 			
 					/* generate Time exceeded (type 11, code 0) reply packet */
-					if ((reply_packet = sr_generate_icmp((sr_ethernet_hdr_t *)packet, ip_hdr, iface, 11, 0)) == 0) {
+					if ((reply_packet = sr_generate_icmp((sr_ethernet_hdr_t *)packet, ip_hdr, recv_iface, 11, 0)) == 0) {
 							fprintf(stderr, "Error: failed to generate ICMP packet\n");
 							return;
 					}
@@ -443,7 +445,7 @@ void sr_handleip(struct sr_instance* sr,
 					if (matched == 0) {
 							
 							/* generate Destination net unreachable (type 3, code 0) reply packet */
-							if ((reply_packet = sr_generate_icmp((sr_ethernet_hdr_t *)packet, ip_hdr, iface, 3, 0)) == 0) {
+							if ((reply_packet = sr_generate_icmp((sr_ethernet_hdr_t *)packet, ip_hdr, recv_iface, 3, 0)) == 0) {
 									fprintf(stderr, "Error: failed to generate ICMP packet\n");
 									return;
 							}
@@ -466,7 +468,7 @@ void sr_handleip(struct sr_instance* sr,
 							
 							/* set the source MAC of ethernet header */
 							ether_hdr = (sr_ethernet_hdr_t*)packet;
-							memcpy(ether_hdr->ether_shost, iface->addr, ETHER_ADDR_LEN);
+							memcpy(ether_hdr->ether_shost, recv_iface->addr, ETHER_ADDR_LEN);
 							
 							/* if the next-hop IP CANNOT be found in ARP cache */
 							if ((arp_entry = sr_arpcache_lookup(&(sr->cache), htonl(nexthop_ip))) == NULL) {
