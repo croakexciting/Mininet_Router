@@ -11,12 +11,12 @@
 #include "sr_if.h"
 #include "sr_protocol.h"
 
-/*
-This function gets called every second. For each request sent out, we keep
-checking whether we should resend an request or destroy the arp request.
-See the comments in the header file for an idea of what it should look like.
+/* 
+  This function gets called every second. For each request sent out, we keep
+  checking whether we should resend an request or destroy the arp request.
+  See the comments in the header file for an idea of what it should look like.
 */
-void sr_arpcache_sweepreqs(struct sr_instance *sr) {
+void sr_arpcache_sweepreqs(struct sr_instance *sr) { 
     /* Fill this in */
     struct sr_arpreq *cur = sr->cache.requests;
     while(cur) {
@@ -26,22 +26,31 @@ void sr_arpcache_sweepreqs(struct sr_instance *sr) {
         }
 }
 
+/*
+  This function handles whether to re-send or destroy ARP request.
+*/
+
 void handle_arpreq(struct sr_instance *sr, struct sr_arpreq *req) {
         time_t now = time(NULL);
         if(difftime(now, req->sent) > 1.0) {
-                if(req->times_sent >= 5) {
+                /* request timeout */
+                if(req->times_sent > 5) {
                         
                         struct sr_packet *packets = req->packets;
                         
+                        /* iterate through all packets on queue */
                         while(packets) {
                                 uint8_t *reply_packet = 0;
                                 sr_ip_hdr_t *ip_hdr = (sr_ip_hdr_t *)(packets->buf+sizeof(sr_ethernet_hdr_t));
-                                reply_packet = sr_generate_icmp((sr_ethernet_hdr_t *)packets->buf, ip_hdr, sr_get_interface(sr, packets->iface), 3, 3);
+                                reply_packet = sr_generate_icmp((sr_ethernet_hdr_t *)packets->buf, ip_hdr, sr_get_interface(sr, packets->iface), 3, 1); /* create ICMP type 3, code 1 (host unreachable) */
+                                /* if ICMP packet fails to generate */
                                 if(reply_packet == 0) {
                                         fprintf(stderr, "Error: failed to generate ICMP packet\n");
                                 }
                                 
-                                if(sr_send_packet(sr, reply_packet, sizeof(reply_packet), packets->iface) == -1) {
+                                
+                                /* send ICMP packet to ip of packet in queue */
+                                if(sr_send_packet(sr, reply_packet, sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t), (const char*)(packets->iface)) == -1) {
                                         fprintf(stderr, "Error: sending packet failed (handle_arpreq)");
                                 }
                                 packets = packets->next;
@@ -53,15 +62,20 @@ void handle_arpreq(struct sr_instance *sr, struct sr_arpreq *req) {
                         /* generate ARP packet */
                         struct sr_if *iface = 0;
                         
+                        /* if interface is not found */
                         if((iface = sr_get_interface(sr, req->packets->iface)) == 0) {
                                 fprintf(stderr, "Error: interface does not exist (handle_arpreq)");
                                 return;
                         }
                         
-                        uint8_t *arp_pkt = sr_new_arpreq_packet(NULL, iface->addr, req->ip, iface->ip);
-                        if (sr_send_packet(sr, arp_pkt, sizeof(arp_pkt), (const char*)iface)==-1) {
+                        uint8_t *arp_pkt = sr_new_arpreq_packet(NULL, iface->addr, req->ip, iface->ip); /* create ARP request packet to re-send */
+
+                        /* send ARP request packet */
+                        if (sr_send_packet(sr, arp_pkt, sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t), (const char*)(iface->name))==-1) {
                                 fprintf(stderr, "Error: sending packet failed.");
                         }
+
+                        /* update arpreq fields */
                         req->times_sent++;
                         req->sent = now;
                         
@@ -70,41 +84,44 @@ void handle_arpreq(struct sr_instance *sr, struct sr_arpreq *req) {
         }
 }
 
-uint8_t *sr_new_arpreq_packet(const unsigned char *dest_MAC,
-        const unsigned char *src_MAC,
-        uint32_t dest_ip,
-        uint32_t src_ip)
+/*
+  This function creates a new ARP request packet with the given parameters.
+*/
+uint8_t *sr_new_arpreq_packet(const unsigned char *dest_MAC, 
+        const unsigned char *src_MAC, 
+        uint32_t dest_ip, 
+        uint32_t src_ip) 
 {
-        sr_arp_hdr_t *arp_hdr = 0;
-        sr_ethernet_hdr_t *ether_hdr = 0;
-        uint8_t *arp_packet = 0;
-        uint8_t broadcast[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+        sr_arp_hdr_t *arp_hdr = 0; /* ARP header */
+        sr_ethernet_hdr_t *ether_hdr = 0; /* Ether header */
+        uint8_t *arp_packet = 0; /* ARP request packet */
+        uint8_t broadcast[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff}; /* broadcast address ff:ff:ff:ff:ff:ff */
         if ((arp_packet = malloc(sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t))) == NULL) {
                 fprintf(stderr,"Error: out of memory (sr_new_arpreq_packet)\n");
         return 0;
     }
         arp_hdr = (sr_arp_hdr_t*)(arp_packet + sizeof(sr_ethernet_hdr_t));
-        arp_hdr->ar_hrd = htons(arp_hrd_ethernet);
-        arp_hdr->ar_pro = htons(ethertype_ip);
-        arp_hdr->ar_hln = htons(ETHER_ADDR_LEN);
-        arp_hdr->ar_pln = htons(4);
-        arp_hdr->ar_op = htons(arp_op_request);
-        memcpy(arp_hdr->ar_sha, src_MAC, ETHER_ADDR_LEN);
-        arp_hdr->ar_sip = htonl(src_ip);
-        arp_hdr->ar_tip = htonl(dest_ip);
-        bzero(arp_hdr->ar_tha, ETHER_ADDR_LEN);
+        arp_hdr->ar_hrd = htons(arp_hrd_ethernet); /* hardware address format */
+        arp_hdr->ar_pro = htons(ethertype_ip); /* format of protocol address */
+        arp_hdr->ar_hln = ETHER_ADDR_LEN; /* header length */
+        arp_hdr->ar_pln = 4; /* length of protocol address */
+        arp_hdr->ar_op = htons(arp_op_request); /* ARP opcode request */
+        memcpy(arp_hdr->ar_sha, src_MAC, ETHER_ADDR_LEN); /* source hardware address */
+        arp_hdr->ar_sip = src_ip; /* source ip */
+        arp_hdr->ar_tip = dest_ip; /* destination ip */
+        bzero(arp_hdr->ar_tha, ETHER_ADDR_LEN); /* target hardware address, zero fill */
         
-        ether_hdr = (sr_ethernet_hdr_t*)arp_packet;
-        memcpy(ether_hdr->ether_dhost, broadcast, ETHER_ADDR_LEN);
-        memcpy(ether_hdr->ether_shost, src_MAC, ETHER_ADDR_LEN);
-        ether_hdr->ether_type = htons(ethertype_arp);
+        ether_hdr = (sr_ethernet_hdr_t*)arp_packet; /* cast as ethernet header */
+        memcpy(ether_hdr->ether_dhost, broadcast, ETHER_ADDR_LEN); /* destination host */
+        memcpy(ether_hdr->ether_shost, src_MAC, ETHER_ADDR_LEN); /* source host */
+        ether_hdr->ether_type = htons(ethertype_arp); /* format of protocol address */
         
         return arp_packet;
 }
 /* You should not need to touch the rest of this code. */
 
 /* Checks if an IP->MAC mapping is in the cache. IP is in network byte order.
-You must free the returned structure if it is not NULL. */
+   You must free the returned structure if it is not NULL. */
 struct sr_arpentry *sr_arpcache_lookup(struct sr_arpcache *cache, uint32_t ip) {
     pthread_mutex_lock(&(cache->lock));
     
@@ -118,7 +135,7 @@ struct sr_arpentry *sr_arpcache_lookup(struct sr_arpcache *cache, uint32_t ip) {
     }
     
     /* Must return a copy b/c another thread could jump in and modify
-table after we return. */
+       table after we return. */
     if (entry) {
         copy = (struct sr_arpentry *) malloc(sizeof(struct sr_arpentry));
         memcpy(copy, entry, sizeof(struct sr_arpentry));
@@ -130,13 +147,14 @@ table after we return. */
 }
 
 /* Adds an ARP request to the ARP request queue. If the request is already on
-the queue, adds the packet to the linked list of packets for this sr_arpreq
-that corresponds to this ARP request. You should free the passed *packet.
-A pointer to the ARP request is returned; it should not be freed. The caller
-can remove the ARP request from the queue by calling sr_arpreq_destroy. */
+   the queue, adds the packet to the linked list of packets for this sr_arpreq
+   that corresponds to this ARP request. You should free the passed *packet.
+   
+   A pointer to the ARP request is returned; it should not be freed. The caller
+   can remove the ARP request from the queue by calling sr_arpreq_destroy. */
 struct sr_arpreq *sr_arpcache_queuereq(struct sr_arpcache *cache,
                                        uint32_t ip,
-                                       uint8_t *packet, /* borrowed */
+                                       uint8_t *packet,           /* borrowed */
                                        unsigned int packet_len,
                                        char *iface)
 {
@@ -176,22 +194,22 @@ struct sr_arpreq *sr_arpcache_queuereq(struct sr_arpcache *cache,
 }
 
 /* This method performs two functions:
-1) Looks up this IP in the request queue. If it is found, returns a pointer
-to the sr_arpreq with this IP. Otherwise, returns NULL.
-2) Inserts this IP to MAC mapping in the cache, and marks it valid. */
+   1) Looks up this IP in the request queue. If it is found, returns a pointer
+      to the sr_arpreq with this IP. Otherwise, returns NULL.
+   2) Inserts this IP to MAC mapping in the cache, and marks it valid. */
 struct sr_arpreq *sr_arpcache_insert(struct sr_arpcache *cache,
                                      unsigned char *mac,
                                      uint32_t ip)
 {
     pthread_mutex_lock(&(cache->lock));
     
-    struct sr_arpreq *req, *prev = NULL, *next = NULL;
+    struct sr_arpreq *req, *prev = NULL, *next = NULL; 
     for (req = cache->requests; req != NULL; req = req->next) {
-        if (req->ip == ip) {
+        if (req->ip == ip) {            
             if (prev) {
                 next = req->next;
                 prev->next = next;
-            }
+            } 
             else {
                 next = req->next;
                 cache->requests = next;
@@ -221,18 +239,18 @@ struct sr_arpreq *sr_arpcache_insert(struct sr_arpcache *cache,
 }
 
 /* Frees all memory associated with this arp request entry. If this arp request
-entry is on the arp request queue, it is removed from the queue. */
+   entry is on the arp request queue, it is removed from the queue. */
 void sr_arpreq_destroy(struct sr_arpcache *cache, struct sr_arpreq *entry) {
     pthread_mutex_lock(&(cache->lock));
     
     if (entry) {
-        struct sr_arpreq *req, *prev = NULL, *next = NULL;
+        struct sr_arpreq *req, *prev = NULL, *next = NULL; 
         for (req = cache->requests; req != NULL; req = req->next) {
-            if (req == entry) {
+            if (req == entry) {                
                 if (prev) {
                     next = req->next;
                     prev->next = next;
-                }
+                } 
                 else {
                     next = req->next;
                     cache->requests = next;
@@ -262,21 +280,21 @@ void sr_arpreq_destroy(struct sr_arpcache *cache, struct sr_arpreq *entry) {
 
 /* Prints out the ARP table. */
 void sr_arpcache_dump(struct sr_arpcache *cache) {
-    fprintf(stderr, "\nMAC IP ADDED VALID\n");
+    fprintf(stderr, "\nMAC            IP         ADDED                      VALID\n");
     fprintf(stderr, "-----------------------------------------------------------\n");
     
     int i;
     for (i = 0; i < SR_ARPCACHE_SZ; i++) {
         struct sr_arpentry *cur = &(cache->entries[i]);
         unsigned char *mac = cur->mac;
-        fprintf(stderr, "%.1x%.1x%.1x%.1x%.1x%.1x %.8x %.24s %d\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], ntohl(cur->ip), ctime(&(cur->added)), cur->valid);
+        fprintf(stderr, "%.1x%.1x%.1x%.1x%.1x%.1x   %.8x   %.24s   %d\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], ntohl(cur->ip), ctime(&(cur->added)), cur->valid);
     }
     
     fprintf(stderr, "\n");
 }
 
 /* Initialize table + table lock. Returns 0 on success. */
-int sr_arpcache_init(struct sr_arpcache *cache) {
+int sr_arpcache_init(struct sr_arpcache *cache) {  
     /* Seed RNG to kick out a random entry if all entries full. */
     srand(time(NULL));
     
@@ -298,7 +316,7 @@ int sr_arpcache_destroy(struct sr_arpcache *cache) {
 }
 
 /* Thread which sweeps through the cache and invalidates entries that were added
-more than SR_ARPCACHE_TO seconds ago. */
+   more than SR_ARPCACHE_TO seconds ago. */
 void *sr_arpcache_timeout(void *sr_ptr) {
     struct sr_instance *sr = sr_ptr;
     struct sr_arpcache *cache = &(sr->cache);
@@ -310,7 +328,7 @@ void *sr_arpcache_timeout(void *sr_ptr) {
     
         time_t curtime = time(NULL);
         
-        int i;
+        int i;    
         for (i = 0; i < SR_ARPCACHE_SZ; i++) {
             if ((cache->entries[i].valid) && (difftime(curtime,cache->entries[i].added) > SR_ARPCACHE_TO)) {
                 cache->entries[i].valid = 0;
