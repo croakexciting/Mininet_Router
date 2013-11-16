@@ -87,19 +87,6 @@ struct sr_icmp_hdr {
 } __attribute__ ((packed)) ;
 typedef struct sr_icmp_hdr sr_icmp_hdr_t;
 
-/* Structure of a echo ICMP header
- */
-struct sr_icmp_echo_hdr {
-  uint8_t icmp_type;
-  uint8_t icmp_code;
-  uint16_t icmp_sum;
-  uint16_t id;
-  uint16_t seq;
-  uint8_t data[ICMP_DATA_SIZE];
-  
-} __attribute__ ((packed)) ;
-typedef struct sr_icmp_echo_hdr sr_icmp_echo_hdr_t;
-
 
 /* Structure of a type3 ICMP header
  */
